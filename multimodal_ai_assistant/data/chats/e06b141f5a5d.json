@@ -1,0 +1,86 @@
+{
+  "conversation_id": "e06b141f5a5d",
+  "title": "Hii",
+  "created_at": 1791657105.418119,
+  "updated_at": 1791657155.007025,
+  "messages": [
+    {
+      "role": "user",
+      "content": "hii",
+      "image_name": null,
+      "dev": {}
+    },
+    {
+      "role": "assistant",
+      "content": "_Validation caveat: evidence overlap was low._\n\nI'm happy to help! However, I don't have any visual information to work with, as there is no image provided. The conversation context doesn't mention an image either. Could you please provide more context or clarify what you'd like to discuss? I'm here to assist you!",
+      "image_name": null,
+      "dev": {
+        "route": "general_question",
+        "trace": [
+          "Router chose 'general_question' — route=general_question | confidence=0.75",
+          "  ↳ No image in this turn or in the session",
+          "Text model answer (llama3:latest, 43.12s)",
+          "Validation: qualified",
+          "  ↳ Validation caveat: evidence overlap was low."
+        ],
+        "plan": {
+          "confidence": 0.75,
+          "rationale": [
+            "No image in this turn or in the session"
+          ],
+          "use_vision": false,
+          "use_ocr": false,
+          "use_retrieval": false,
+          "trust_ocr": true
+        },
+        "validation": {
+          "status": "qualified",
+          "confidence": 0.66,
+          "checks": [
+            {
+              "name": "V5-format",
+              "passed": true,
+              "detail": "46 words"
+            },
+            {
+              "name": "V5-safety",
+              "passed": true,
+              "detail": "No capability refusals"
+            },
+            {
+              "name": "V1-relevance",
+              "passed": false,
+              "detail": "semantic=0.12 coverage=0.00 lexical=0.00"
+            },
+            {
+              "name": "V2-grounding",
+              "passed": false,
+              "detail": "No evidence available to ground the answer"
+            },
+            {
+              "name": "V3-numbers",
+              "passed": true,
+              "detail": "No numeric claims to verify"
+            },
+            {
+              "name": "V6-fabrication",
+              "passed": true,
+              "detail": "No evidence to compare entities against"
+            },
+            {
+              "name": "V4-uncertainty",
+              "passed": true,
+              "detail": "Image quality adequate"
+            }
+          ],
+          "warnings": [
+            "The answer may not directly address the question asked.",
+            "The answer was produced without any supporting evidence. Treat it as unverified."
+          ]
+        }
+      }
+    }
+  ],
+  "image_name": null,
+  "image_b64": null
+}

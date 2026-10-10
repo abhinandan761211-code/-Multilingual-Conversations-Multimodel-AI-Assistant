@@ -1,0 +1,203 @@
+MULTIMODAL AI ASSISTANT — CAPTURED DEMO OUTPUT
+Generated: 2026-10-10 16:08 UTC
+Model: qwen2.5vl:7b (vision) / llama3:latest (text)
+Retriever: chromadb, 13 chunks / 3 documents
+Tests: 87 passed in 7.57s
+
+This is real, unedited output from: python tools/demo_scenarios.py
+==============================================================================
+
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Model health: Ollama ready (vision + text models available).
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 1 — Image + clear question
+──────────────────────────────────────────────────────────────────────────────
+Input: loss_curve.png + "When does the validation loss start increasing, and why?"
+
+ROUTE      : analyse_chart
+PLAN       : route=analyse_chart | confidence=0.85 | vision=yes | ocr=yes(trust=True)
+VALIDATION : ✅ pass (confidence 0.97)
+
+ANSWER:
+- **Chart Type:** Line graph
+- **Title:** Model Loss over Training
+- **X-axis:** Epoch
+- **Y-axis:** Loss
+- **Series/Legend Entries:** Training loss (blue line), Validation loss (orange line)
+- **Overall Trend of Each Series:**
+  - The training loss decreases steadily over the epochs.
+  - The validation loss initially decreases but then starts increasing after epoch 6.
+- **Specific Values:**
+  - Training loss: Approximately 0.1 at epoch 20.
+  - Validation loss: Approximately 0.3 at epoch 6.
+- **Specific Values at Key Points:**
+  - Training loss at epoch 0: Approximately 0.9.
+  - Validation loss at epoch 0: Approximately 1.0.
+  - Validation loss at epoch 6: Approximately 0.3.
+
+The validation loss starts increasing after epoch 6, which is likely due to overfitting. The model is learning the training data too well, to the point where it starts to perform worse on unseen data (validation set). This is a common issue in machine learning where the model becomes too complex and starts to memorize the training data rather than learning the underlying patterns.
+
+TRACE:
+  Image accepted: 960x640 PNG, sharpness=2681.9
+  Router chose 'analyse_chart' — route=analyse_chart | confidence=0.85 | vision=yes | ocr=yes(trust=True)
+    ↳ Fresh image supplied with a concrete request
+    ↳ Pixel structure suggests text content
+    ↳ Image shows text-like structure → OCR as cross-check
+    ↳ Strategy: structured chart analysis
+  OCR (tesseract) extracted 55 chars, confidence=0.958
+  VLM chart analysis (qwen2.5vl:7b, 55.18s)
+  Validation: pass
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 2 — Image without a clear question (ambiguity)
+──────────────────────────────────────────────────────────────────────────────
+Input: handwritten_math.png + "check this"
+
+ROUTE      : clarify
+PLAN       : route=clarify | confidence=0.90 | classifier=llm
+VALIDATION : ❓ needs_clarification (confidence 0.90)
+
+ANSWER:
+Can you please specify what you would like me to check?
+
+TRACE:
+  Image accepted: 900x500 PNG, sharpness=561.6
+  Router chose 'clarify' — route=clarify | confidence=0.90 | classifier=llm
+    ↳ A new image was supplied but the request is ambiguous
+    ↳ Detected vague phrasing (words=2)
+  Returned a clarifying question instead of guessing
+
+>>> Note: no vision call was made — the system chose to ask first.
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 3 — Follow-up on the same image (memory)
+──────────────────────────────────────────────────────────────────────────────
+Turn 1: neural_net.png + "What kind of diagram is this?"
+Turn 2 (no image re-uploaded): "What does the middle layer do?"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 7751.90it/s]
+
+ROUTE      : follow_up
+PLAN       : route=follow_up | confidence=0.80 | vision=yes | retrieval=yes
+VALIDATION : ✅ pass (confidence 0.97)
+
+ANSWER:
+Based on the reference material, the middle (hidden) layer's job is to transform the input representation into something the output layer can separate.
+
+TRACE:
+  Router chose 'follow_up' — route=follow_up | confidence=0.80 | vision=yes | retrieval=yes
+    ↳ Message contains referring expressions to earlier context
+    ↳ Resolved to stored image 'neural_net.png'
+  Retrieved 4 evidence chunk(s) (backend=chromadb)
+    ↳ machine_learning_basics.md (score=0.6052)
+    ↳ machine_learning_basics.md (score=0.4701)
+    ↳ machine_learning_basics.md (score=0.4626)
+    ↳ multimodal_ai_and_charts.md (score=0.419)
+  Reused stored image context (no re-upload needed)
+  Follow-up answered from primary evidence
+  Text model answer (llama3:latest, 20.47s)
+  Validation: pass
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 4 — Blurry / partly obscured image (uncertainty)
+──────────────────────────────────────────────────────────────────────────────
+Input: blurred_scene.png + "How many people are in this image?"
+
+ROUTE      : answer_with_image
+PLAN       : route=answer_with_image | confidence=0.85 | vision=yes | ocr=yes(trust=False)
+VALIDATION : ✅ pass (confidence 0.95)
+
+ANSWER:
+The image shows four figures that appear to be people. However, the image is blurry, so it is not possible to confirm the exact number of people or any other details about them.
+
+TRACE:
+  Image accepted: 800x560 PNG, sharpness=0.3
+  Quality notes: Low sharpness score (0.3); text may be unreadable
+  Router chose 'answer_with_image' — route=answer_with_image | confidence=0.85 | vision=yes | ocr=yes(trust=False)
+    ↳ Fresh image supplied with a concrete request
+    ↳ Pixel structure suggests a chart or diagram
+    ↳ Chart/diagram → OCR to capture axis labels and legend
+    ↳ OCR output treated as low-confidence due to image quality
+    ↳ Strategy: structured chart analysis
+    ↳ Question asks for specific facts → direct answer path
+  OCR (tesseract) extracted 0 chars, confidence=0.0
+  VLM answer (qwen2.5vl:7b, 30.88s)
+  Validation: pass
+
+>>> Image diagnostics: blur=0.3 blurry=True (800x560)
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 5 — Question requiring external facts (retrieval)
+──────────────────────────────────────────────────────────────────────────────
+Input (text only): "What is overfitting and how do you prevent it?"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 7435.69it/s]
+
+ROUTE      : general_question
+PLAN       : route=general_question | confidence=0.75 | retrieval=yes
+VALIDATION : ✅ pass (confidence 0.97)
+
+ANSWER:
+Based on the provided reference material, overfitting occurs when a model learns the training data too well, including its noise and random fluctuations, so it fails to generalize to unseen data. The classic symptom is a training loss that keeps decreasing while the validation loss stops improving and then rises.
+
+To prevent overfitting, the standard remedies are:
+
+* Collecting more training data
+* Reducing model capacity
+* Adding regularization (L1, L2, dropout)
+* Early stopping - halting training at the point where validation loss begins to rise
+
+Note that the reference material does not explicitly state the reasons why validation loss increases when overfitting occurs. However, it mentions that common contributing factors are a small training set, a high-capacity model, too many epochs, and no regularization.
+
+TRACE:
+  Router chose 'general_question' — route=general_question | confidence=0.75 | retrieval=yes
+    ↳ No image in this turn or in the session
+    ↳ Question may need supporting documents → retrieval enabled
+  Retrieved 4 evidence chunk(s) (backend=chromadb)
+    ↳ machine_learning_basics.md (score=0.6331)
+    ↳ multimodal_ai_and_charts.md (score=0.5472)
+    ↳ machine_learning_basics.md (score=0.4158)
+    ↳ system_architecture.md (score=0.3986)
+  Text model answer (llama3:latest, 34.31s)
+  Validation: pass
+
+>>> Retrieved 4 evidence chunk(s):
+    - machine_learning_basics.md (score 0.6331)
+    - multimodal_ai_and_charts.md (score 0.5472)
+    - machine_learning_basics.md (score 0.4158)
+    - system_architecture.md (score 0.3986)
+
+──────────────────────────────────────────────────────────────────────────────
+SCENARIO 6 — Question the evidence cannot support (validation)
+──────────────────────────────────────────────────────────────────────────────
+Input: neural_net.png + "What is the exact accuracy value shown?"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 8335.52it/s]
+
+ROUTE      : answer_with_image
+PLAN       : route=answer_with_image | confidence=0.70 | vision=yes | ocr=yes(trust=True) | retrieval=yes
+VALIDATION : ✅ pass (confidence 0.97)
+
+ANSWER:
+The image provided is a diagram of a neural network with three layers: Input, Hidden (middle), and Output. It does not contain any numerical values or text that would indicate accuracy. Therefore, it is not possible to determine the exact accuracy value from this image. The question cannot be answered based on the information given in the image.
+
+TRACE:
+  Image accepted: 900x560 PNG, sharpness=2207.6
+  Router chose 'answer_with_image' — route=answer_with_image | confidence=0.70 | vision=yes | ocr=yes(trust=True) | retrieval=yes
+    ↳ Fresh image supplied with a concrete request
+    ↳ Pixel structure suggests text content
+    ↳ Image shows text-like structure → OCR as cross-check
+    ↳ Strategy: answer the specific question using the image
+    ↳ Enabling document retrieval for supporting evidence
+  Retrieved 4 evidence chunk(s) (backend=chromadb)
+    ↳ machine_learning_basics.md (score=0.4862)
+    ↳ multimodal_ai_and_charts.md (score=0.3908)
+    ↳ system_architecture.md (score=0.3877)
+    ↳ multimodal_ai_and_charts.md (score=0.3875)
+  OCR (tesseract) extracted 43 chars, confidence=0.797
+  VLM answer (qwen2.5vl:7b, 45.74s)
+  Validation: pass
+
+>>> The validator checks numbers against the visible evidence and downgrades the answer if a value cannot be traced.
+
+──────────────────────────────────────────────────────────────────────────────
+DONE
+──────────────────────────────────────────────────────────────────────────────

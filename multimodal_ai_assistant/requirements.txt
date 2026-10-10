@@ -1,0 +1,24 @@
+# ── Multimodal AI Assistant — dependencies ────────────────────────────────────
+# Core UI
+streamlit>=1.40.0
+
+# Local vision-language model runtime (Llama 3.2 Vision via Ollama)
+ollama>=0.4.0
+
+# Image handling / validation
+Pillow>=10.0.0
+
+# Structured validation of responses
+pydantic>=2.5.0
+
+# OCR backends (optional at runtime — the router degrades gracefully)
+# EasyOCR needs torch; Tesseract needs the system `tesseract` binary.
+easyocr>=1.7.0 ; platform_system != "Darwin" or python_version < "3.12"
+pytesseract>=0.3.10
+
+# Evidence retrieval: embeddings + vector store
+sentence-transformers>=2.5.0
+chromadb>=0.5.0
+
+# Numerics
+numpy>=1.26.0
