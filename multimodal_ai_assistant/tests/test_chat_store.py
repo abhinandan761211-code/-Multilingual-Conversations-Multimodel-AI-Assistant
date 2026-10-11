@@ -251,6 +251,31 @@ class TestConversationImage:
         assert reloaded.image_bytes() == b"BYTES"
         assert reloaded.image_name == "loss.png"
 
+    def test_message_label_matches_stored_image(self, store):
+        """
+        Regression: a message's image_name and the conversation's stored bytes
+        must never disagree.
+
+        The bug: attaching a second image to a conversation wrote the new
+        filename onto the message while the conversation kept the ORIGINAL
+        bytes (the guard only adopted an image when none existed). The UI then
+        showed a message labelled 'loss_curve.png' rendering a different file.
+        """
+        conversation = Conversation(conversation_id="mismatch")
+        conversation.attach_image("first.png", b"FIRSTBYTES")
+        conversation.messages.append(
+            StoredMessage(role="user", content="analyse this", image_name="first.png")
+        )
+        store.save(conversation)
+
+        loaded = store.load("mismatch")
+        assert loaded.image_name == "first.png"
+        assert loaded.image_bytes() == b"FIRSTBYTES"
+        # Every labelled message must name the image the conversation actually holds.
+        for message in loaded.messages:
+            if message.image_name:
+                assert message.image_name == loaded.image_name
+
     def test_detached_image_is_persisted_as_none(self, store):
         conversation = store.create()
         conversation.attach_image("x.png", b"BYTES")

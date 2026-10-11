@@ -26,6 +26,24 @@ The interface is built with Streamlit. Model inference runs locally through
 - Fall back to keyword retrieval and lexical validation when optional embedding
   or vector-store components are unavailable.
 
+## Multilingual conversations
+
+- **Automatic language identification** for English, Hindi, Odia and Bengali,
+  including Roman-script (Hinglish) and mixed-language input — no language
+  selector, no per-language bot.
+- **Cross-lingual intent understanding**: the same question in four languages
+  normalises to the same intent, and technical terms (API, Python, overfitting)
+  are never translated.
+- **Context that survives a language switch**: ask in English, follow up in
+  Hindi, then ask again in English — the assistant keeps the topic.
+- **Clarification instead of guessing** for ambiguous references like
+  "Isko improve kaise karun?", asked back in *your* language.
+- **Consistent answers**: the reply is validated to be in the requested language
+  and re-expressed once if the model drifted.
+
+See [`multimodal_ai_assistant/docs/MULTILINGUAL.md`](multimodal_ai_assistant/docs/MULTILINGUAL.md)
+for the design and the evaluation results.
+
 ## How it works
 
 ```text
@@ -64,6 +82,11 @@ Image text extraction can use Tesseract or EasyOCR. Both are optional: without
 an OCR backend the vision model can still read images. Semantic retrieval uses
 Sentence-Transformers and ChromaDB when available, with a keyword fallback.
 
+Multilingual support needs **no extra packages**: language identification for
+English, Hindi, Odia and Bengali works from Unicode script ranges plus a
+Roman-Hinglish lexicon. FastText (`lid.176`) and `lingua` are optional upgrades
+for short Roman-script input.
+
 ## Quick start
 
 From the repository root:
@@ -80,8 +103,8 @@ python -m pip install -r requirements.txt
 Install and start Ollama, then pull the default models:
 
 ```bash
-ollama pull qwen2.5vl:7b
-ollama pull llama3.2:3b
+ollama pull qwen2.5vl:7b     # vision model
+ollama pull qwen3:4b         # multilingual text model (en / hi / or / bn)
 ollama serve
 ```
 
@@ -94,10 +117,16 @@ streamlit run app.py
 Open the local URL printed by Streamlit (usually
 <http://localhost:8501>).
 
-The default vision model is `qwen2.5vl:7b`; the default text model is
-`llama3.2:3b`. If the configured text model is unavailable, the app attempts to
-select an installed local text model. Model inference stays on the Ollama
-instance configured for the app.
+The default vision model is `qwen2.5vl:7b`; the default text model is `qwen3:4b`,
+chosen for its strength in Indic scripts. If the configured text model is
+unavailable, the app attempts to select an installed local text model. Model
+inference stays on the Ollama instance configured for the app.
+
+To keep an older model you already have, override it:
+
+```bash
+TEXT_MODEL=llama3.2:3b streamlit run app.py
+```
 
 ### Optional OCR setup
 
@@ -135,7 +164,7 @@ Settings are read from environment variables in
 
 ```bash
 VISION_MODEL=qwen2.5vl:7b \
-TEXT_MODEL=llama3.2:3b \
+TEXT_MODEL=qwen3:4b \
 OCR_BACKEND=tesseract \
 streamlit run app.py
 ```
@@ -144,7 +173,7 @@ streamlit run app.py
 | --- | --- | --- |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `VISION_MODEL` | `qwen2.5vl:7b` | Image-capable model |
-| `TEXT_MODEL` | `llama3.2:3b` | Text and follow-up model |
+| `TEXT_MODEL` | `qwen3:4b` | Multilingual text and follow-up model |
 | `OCR_ENABLED` | `1` | Enable/disable OCR |
 | `OCR_BACKEND` | `auto` | `auto`, `easyocr`, `tesseract`, or `none` |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Retrieval/validation embedding model |
@@ -153,6 +182,13 @@ streamlit run app.py
 | `GROUNDING_MIN_SCORE` | `0.30` | Minimum grounding score |
 | `MAX_TURNS` | `12` | Conversation turns retained in memory |
 | `PERSIST_CHATS` | `1` | Persist chat history locally |
+| `LANGUAGE_BACKEND` | `auto` | `auto` (FastText/lingua) or `heuristic` (offline) |
+| `FASTTEXT_LID_PATH` | *(unset)* | Path to a FastText `lid.176` model |
+| `LANGUAGE_CONFIDENCE_THRESHOLD` | `0.55` | Below this, ask instead of assuming |
+| `DEFAULT_LANGUAGE` | `en` | Fallback for unclassifiable input |
+| `UNSUPPORTED_LANGUAGE_FALLBACK` | `en` | Reply language for other languages |
+| `ENFORCE_RESPONSE_LANGUAGE` | `1` | Enable the corrective re-expression pass |
+| `TRANSLATION_MODEL` | *(unset)* | Model for the language-correction pass |
 
 Other image, timeout, temperature, and storage settings are also available in
 `config.py`.
@@ -201,8 +237,11 @@ multimodal_ai_assistant/
 ├── vision_model.py           # Ollama model client
 ├── image_processor.py        # Image checks, OCR, and encoding
 ├── evidence_retriever.py     # Local document retrieval
-├── response_validator.py    # Relevance, grounding, and safety checks
-├── conversation_memory.py   # In-memory conversation and image context
+├── response_validator.py    # Relevance, grounding, language, and safety checks
+├── conversation_memory.py   # Conversation, image, and language context
+├── language_detector.py     # Multilingual language identification (en/hi/or/bn)
+├── intent_manager.py        # Cross-lingual intent normalisation (Pydantic)
+├── multilingual_model.py    # Language-steered generation
 ├── chat_store.py             # Local conversation persistence
 ├── ui_theme.py               # Streamlit presentation and styling
 ├── data/
@@ -210,10 +249,12 @@ multimodal_ai_assistant/
 │   └── chats/                # Persisted conversations
 ├── docs/
 │   ├── ARCHITECTURE.md       # Design and processing details
+│   ├── MULTILINGUAL.md      # Multilingual layer design and evaluation
 │   └── DEMO_OUTPUT.txt       # Captured demo output
 ├── tests/                    # Offline unit tests
 └── tools/                    # Demo image and scenario utilities
 ```
 
 For more implementation details, see
-[`docs/ARCHITECTURE.md`](multimodal_ai_assistant/docs/ARCHITECTURE.md).
+[`docs/ARCHITECTURE.md`](multimodal_ai_assistant/docs/ARCHITECTURE.md) and
+[`docs/MULTILINGUAL.md`](multimodal_ai_assistant/docs/MULTILINGUAL.md).

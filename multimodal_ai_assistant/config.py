@@ -33,7 +33,11 @@ for _d in (DATA_DIR, DOCUMENTS_DIR, CHROMA_DIR, UPLOAD_CACHE_DIR):
 #     VISION_MODEL=llama3.2-vision:11b streamlit run app.py
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:7b")
-TEXT_MODEL = os.getenv("TEXT_MODEL", "llama3.2:3b")
+# The multilingual text model. Qwen3 is chosen because it reasons and writes
+# fluently in English, Hindi, Odia and Bengali, whereas llama3.2's coverage of
+# the two Indic scripts is thin. It is a drop-in for the old default; override
+# with TEXT_MODEL=<model> if a different one is already pulled.
+TEXT_MODEL = os.getenv("TEXT_MODEL", "qwen3:4b")
 
 # Generation parameters
 VISION_TEMPERATURE = float(os.getenv("VISION_TEMPERATURE", "0.2"))
@@ -73,3 +77,26 @@ MAX_STORED_IMAGE_BYTES = int(os.getenv("MAX_STORED_IMAGE_BYTES", str(5 * 1024 * 
 AMBIGUITY_CONFIDENCE_THRESHOLD = float(os.getenv("AMBIGUITY_CONFIDENCE_THRESHOLD", "0.45"))
 # Answers whose grounding score is below this get flagged / downgraded.
 GROUNDING_MIN_SCORE = float(os.getenv("GROUNDING_MIN_SCORE", "0.30"))
+
+# ── Multilingual behaviour ────────────────────────────────────────────────────
+# Automatic language identification for English / Hindi / Odia / Bengali.
+#   LANGUAGE_BACKEND=auto      → try fastText (lid.176), then lingua, else heuristic
+#   LANGUAGE_BACKEND=heuristic → script + lexicon only (fully offline, no deps)
+LANGUAGE_BACKEND = os.getenv("LANGUAGE_BACKEND", "auto")
+# Optional path to a FastText lid.176 model; empty → look in ./models/.
+FASTTEXT_LID_PATH = os.getenv("FASTTEXT_LID_PATH", "")
+# Confidence below this on language detection → ask instead of assuming.
+LANGUAGE_CONFIDENCE_THRESHOLD = float(
+    os.getenv("LANGUAGE_CONFIDENCE_THRESHOLD", "0.55")
+)
+# Default language for messages we cannot classify (usually English in a
+# technical setting). One of en / hi / or / bn.
+DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "en")
+# When the user's language is unsupported (e.g. Tamil), reply in this language.
+UNSUPPORTED_LANGUAGE_FALLBACK = os.getenv("UNSUPPORTED_LANGUAGE_FALLBACK", "en")
+# Enforce that the answer comes back in the user's language (adds a check and a
+# corrective pass). Set to 0 to only *report* the mismatch in developer mode.
+ENFORCE_RESPONSE_LANGUAGE = os.getenv("ENFORCE_RESPONSE_LANGUAGE", "1") == "1"
+# The model used to translate an answer when it came back in the wrong
+# language ("retry in the right language"). Empty → reuse TEXT_MODEL.
+TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "")

@@ -35,6 +35,18 @@ from image_processor import (
     preprocess_for_reading,
     run_ocr,
 )
+from intent_manager import (
+    IntentContext,
+    IntentManager,
+    NormalizedIntent,
+    get_intent_manager,
+)
+from language_detector import (
+    SUPPORTED_LANGUAGES,
+    LanguageReport,
+    detect_language_cached,
+)
+from multilingual_model import MultilingualModel, system_prompt_for
 from reasoning_router import ReasoningRouter, Route, RoutePlan
 from response_validator import (
     ResponseValidator,
@@ -66,8 +78,20 @@ class AssistantTurn:
     trace: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
+    # Multilingual telemetry — everything the UI/dev panel needs to *show* that
+    # language, intent and context were handled, rather than merely claiming it.
+    language: Optional[LanguageReport] = None
+    intent: Optional[NormalizedIntent] = None
+    response_language: str = "en"
+    language_switched: bool = False
+    response_language_corrected: bool = False
+
     def trace_text(self) -> str:
         return "\n".join(f"{i}. {step}" for i, step in enumerate(self.trace, 1))
+
+    @property
+    def detected_language(self) -> str:
+        return self.language.code if self.language else "en"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +114,8 @@ class AssistantPipeline:
         memory: Optional[ConversationMemory] = None,
         router: Optional[ReasoningRouter] = None,
         validator: Optional[ResponseValidator] = None,
+        multilingual: Optional[MultilingualModel] = None,
+        intent_manager: Optional[IntentManager] = None,
     ) -> None:
         self.vision = vision_model or VisionModel()
         self.retriever = retriever or EvidenceRetriever()
@@ -97,6 +123,12 @@ class AssistantPipeline:
         self.router = router or ReasoningRouter(classifier=self.vision.classify_request)
         self.validator = validator or ResponseValidator(
             entailment_checker=self.vision.check_entailment
+        )
+        # The multilingual layer. It reuses `self.vision` for transport, so there
+        # is still exactly one path that talks to Ollama.
+        self.multilingual = multilingual or MultilingualModel(vision_model=self.vision)
+        self.intent_manager = intent_manager or IntentManager(
+            refiner=self.multilingual.normalize_intent
         )
         self._retriever_ready = False
 
@@ -151,12 +183,65 @@ class AssistantPipeline:
             else:
                 turn.trace.append(f"Image rejected: {diagnostics.error}")
 
-        # ── 2/3. route ──────────────────────────────────────────────────────
+        # ── 2. language identification + intent normalisation ───────────────
+        #
+        # This runs BEFORE routing. Two reasons:
+        #   * the router's heuristics are English-only, so the normalised intent
+        #     (which the multilingual keyword tables understand) must be able to
+        #     influence the route;
+        #   * every later step — clarification, generation, validation — needs to
+        #     agree on one language decision, and this is where it is made.
+        previous_language = self.memory.previous_language()
+        language = detect_language_cached(user_message, previous_language)
+        turn.language = language
+        turn.language_switched = bool(
+            previous_language and language.code != previous_language
+        )
+
+        intent = self.intent_manager.normalize(
+            user_message,
+            IntentContext(
+                previous_language=previous_language,
+                has_image=diagnostics is not None and diagnostics.valid,
+                has_prior_turns=bool(self.memory.turns),
+                recent_subjects=self.memory.recent_subjects(),
+                language_report=language,
+            ),
+            use_llm=False,
+        )
+        turn.intent = intent
+        turn.response_language = intent.response_language
+
+        turn.trace.append(
+            f"Language: {language.name} ({language.code}, "
+            f"confidence={language.confidence:.2f}, via {language.backend})"
+            + (f" + mixed {language.mixed_languages}" if language.mixed else "")
+        )
+        if turn.language_switched:
+            turn.trace.append(
+                f"  ↳ Language switch detected: "
+                f"{previous_language} → {language.code}; context retained"
+            )
+        turn.trace.append(
+            f"Intent (normalised): {intent.intent} "
+            f"(confidence={intent.confidence:.2f}, via {intent.source_of_resolution})"
+        )
+        if intent.entities:
+            turn.trace.append(f"  ↳ Entities: {', '.join(intent.entities)}")
+        if intent.response_language != language.code:
+            turn.trace.append(
+                f"  ↳ Explicit response-language request: "
+                f"{intent.response_language}"
+            )
+
+        # ── 3. route ────────────────────────────────────────────────────────
         plan = self.router.plan(
             user_message=user_message,
             diagnostics=diagnostics,
             memory=self.memory,
             new_image_id=image_id,
+            normalized_intent=intent,
+            language_report=language,
         )
         turn.plan = plan
         turn.route = plan.route.value
@@ -166,33 +251,46 @@ class AssistantPipeline:
 
         # ── early exits: clarify / small talk need no model call ────────────
         if plan.route == Route.CLARIFY:
+            # The clarifying question is already produced in the user's
+            # language by the intent manager (or the router's template). We do
+            # not translate it afterwards: a clarification that changes language
+            # is exactly the kind of inconsistency this layer exists to prevent.
             turn.answer = plan.clarifying_question
             turn.validation = self._validate(
                 turn.answer, plan, diagnostics, user_message,
                 image_summary="", ocr=None, evidence=[],
+                response_language=intent.response_language,
             )
             turn.trace.append("Returned a clarifying question instead of guessing")
             self.memory.add_turn(
                 user_message, turn.answer, image_id=image_id,
                 route=turn.route, validation_status=turn.validation.status.value,
+                language=language.code,
+                response_language=intent.response_language,
+                intent=intent.intent,
+                subjects=intent.entities,
             )
             return turn
 
         if plan.route == Route.SMALL_TALK:
-            turn.answer = (
-                "Hello! I'm your multimodal assistant. Ask me a question, or "
-                "upload an image (a chart, a diagram, a screenshot, a handwritten "
-                "note) and I'll reason over it — and I'll tell you when something "
-                "is unclear rather than guessing."
-            )
+            # Greet in the user's language — a multilingual assistant that
+            # answers a Hindi greeting in English has not understood the user.
+            turn.answer = self.multilingual.greeting(intent.response_language)
             turn.validation = self._validate(
                 turn.answer, plan, diagnostics, user_message,
                 image_summary="", ocr=None, evidence=[],
+                response_language=intent.response_language,
             )
-            turn.trace.append("Handled as a social turn")
+            turn.trace.append(
+                f"Handled as a social turn in {intent.response_language}"
+            )
             self.memory.add_turn(
                 user_message, turn.answer, route=turn.route,
                 validation_status=turn.validation.status.value,
+                language=language.code,
+                response_language=intent.response_language,
+                intent=intent.intent,
+                subjects=intent.entities,
             )
             return turn
 
@@ -231,6 +329,15 @@ class AssistantPipeline:
         context = self.memory.context_for_prompt()
         stored_image_record = self.memory.get_image(plan.image_id)
 
+        # The language pin that every generation path shares. For the vision
+        # paths we append it to the user turn; the text paths get it via the
+        # multilingual wrapper's system prompt.
+        lang_instruction = (
+            f"\n\nIMPORTANT: answer in "
+            f"{intent.response_language} using its native script. "
+            "Keep technical terms (API, Python, model, overfitting) untranslated."
+        )
+
         answer = ""
         model_error = None
         image_summary = ""
@@ -247,7 +354,9 @@ class AssistantPipeline:
                 )
 
             elif plan.route == Route.ANALYSE_CHART and image_b64:
-                response = self.vision.analyse_chart(image_b64, user_message, context)
+                response = self.vision.analyse_chart(
+                    image_b64, user_message + lang_instruction, context
+                )
                 answer = response.text
                 model_error = response.error
                 image_summary = answer
@@ -256,7 +365,9 @@ class AssistantPipeline:
                 )
 
             elif plan.route == Route.DESCRIBE_IMAGE and image_b64:
-                response = self.vision.describe_image(image_b64, user_message, context)
+                response = self.vision.describe_image(
+                    image_b64, user_message + lang_instruction, context
+                )
                 answer = response.text
                 model_error = response.error
                 image_summary = answer
@@ -266,7 +377,8 @@ class AssistantPipeline:
 
             elif plan.route in (Route.ANSWER_WITH_IMAGE,) and image_b64:
                 response = self.vision.answer_with_image(
-                    image_b64, user_message, context, reference_context
+                    image_b64, user_message + lang_instruction, context,
+                    reference_context,
                 )
                 answer = response.text
                 model_error = response.error
@@ -290,13 +402,9 @@ class AssistantPipeline:
                     "primary evidence" if image_context else "conversation only"
                 )
                 turn.trace.append(f"Follow-up answered from {role}")
-                response = self.vision.answer_without_image(
-                    user_message, merged_context, reference_context
-                )
-                answer = response.text
-                model_error = response.error
-                turn.trace.append(
-                    f"Text model answer ({response.model}, {response.latency_s}s)"
+                answer, model_error = self._answer_text(
+                    user_message, intent.response_language, merged_context,
+                    reference_context, turn
                 )
 
             else:
@@ -326,13 +434,9 @@ class AssistantPipeline:
                             f"{reference_context}\n\nText read from the image:\n{ocr_text}"
                         )
 
-                response = self.vision.answer_without_image(
-                    user_message, question_context, reference_context
-                )
-                answer = response.text
-                model_error = response.error
-                turn.trace.append(
-                    f"Text model answer ({response.model}, {response.latency_s}s)"
+                answer, model_error = self._answer_text(
+                    user_message, intent.response_language, question_context,
+                    reference_context, turn
                 )
 
         except Exception as exc:  # noqa: BLE001 - never crash the UI
@@ -357,6 +461,7 @@ class AssistantPipeline:
             ocr=ocr_result,
             evidence=turn.evidence,
             vlm_text=vlm_text,
+            response_language=intent.response_language,
         )
         turn.validation = validation
         final_answer = ResponseValidator.apply_uncertainty_note(validation, answer)
@@ -367,7 +472,8 @@ class AssistantPipeline:
             turn.trace.append(f"Validation: {validation.status.value}")
         turn.answer = final_answer
 
-        # ── 8. record the turn ──────────────────────────────────────────────
+        # ── 8. record the turn (with its language + intent, so a later
+        #        language switch can still resolve context) ─────────────────
         self.memory.add_turn(
             user_message,
             turn.answer,
@@ -375,8 +481,48 @@ class AssistantPipeline:
             route=turn.route,
             validation_status=validation.status.value,
             metadata={"evidence": [e.citation() for e in turn.evidence]},
+            language=language.code,
+            response_language=intent.response_language,
+            intent=intent.intent,
+            subjects=intent.entities,
         )
         return turn
+
+    def _answer_text(
+        self,
+        user_message: str,
+        response_language: str,
+        context: str,
+        reference_context: str,
+        turn: AssistantTurn,
+    ) -> tuple[str, Optional[str]]:
+        """
+        Answer a text-only (or follow-up) question in the user's language.
+
+        Uses the language-aware `MultilingualModel`, which pins the answer
+        language and preserves the conversation's meaning across switches, then
+        verifies the answer really came back in the requested language and
+        re-expresses it once if it did not.
+        """
+        result = self.multilingual.answer(
+            user_message,
+            response_language,
+            context=context,
+            reference_context=reference_context,
+            conversation_languages=self.memory.language_history(),
+        )
+        if result.corrected:
+            turn.response_language_corrected = True
+            turn.trace.append(
+                f"Answer language corrected to "
+                f"{result.requested_language} (model first replied in "
+                f"{result.response_language})"
+            )
+        turn.trace.append(
+            f"Text model answer ({result.model}, {result.latency_s}s, "
+            f"language={result.response_language})"
+        )
+        return result.text, result.error
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -390,6 +536,7 @@ class AssistantPipeline:
         ocr,
         evidence: list[Evidence],
         vlm_text: str = "",
+        response_language: str = "en",
     ) -> ValidationReport:
         ocr_text = ""
         ocr_untrusted = False
@@ -412,6 +559,7 @@ class AssistantPipeline:
             evidence=evidence,
             conversation_context=self.memory.context_for_prompt(),
             ocr_was_untrusted=ocr_untrusted,
+            response_language=response_language,
         )
         return self.validator.validate(answer, context)
 

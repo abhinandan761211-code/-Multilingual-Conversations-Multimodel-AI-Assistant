@@ -76,6 +76,15 @@ class RoutePlan:
     # clarification
     clarifying_question: str = ""
 
+    # multilingual
+    detected_language: str = "en"
+    response_language: str = "en"
+    language_mixed: bool = False
+    mixed_languages: list[str] = field(default_factory=list)
+    language_confidence: float = 0.5
+    language_switch: bool = False
+    normalized_intent: Optional[Any] = None
+
     # book-keeping
     confidence: float = 0.5
     classifier_used: bool = False
@@ -95,6 +104,9 @@ class RoutePlan:
             bits.append("retrieval=yes")
         if self.classifier_used:
             bits.append("classifier=llm")
+        bits.append(f"lang={self.detected_language}→{self.response_language}")
+        if self.language_switch:
+            bits.append("switch=yes")
         return " | ".join(bits)
 
 
@@ -280,11 +292,51 @@ class ReasoningRouter:
         diagnostics: Optional[ImageDiagnostics] = None,
         memory: Optional[ConversationMemory] = None,
         new_image_id: Optional[str] = None,
+        normalized_intent: Optional[Any] = None,
+        language_report: Optional[Any] = None,
     ) -> RoutePlan:
         signals = extract_signals(user_message)
         memory = memory or ConversationMemory()
         has_new_image = diagnostics is not None and diagnostics.valid
         has_image = has_new_image or memory.active_image is not None
+
+        # Compute the plan, then stamp multilingual metadata onto it in one
+        # place. Writing the language onto every early-return branch by hand is
+        # how metadata goes missing on exactly the branch that matters.
+        plan = self._plan_core(
+            user_message, signals, diagnostics, memory, new_image_id,
+            has_new_image, has_image, normalized_intent,
+        )
+        self._apply_language(plan, normalized_intent, language_report, memory)
+        return plan
+
+    def _plan_core(
+        self,
+        user_message: str,
+        signals: "IntentSignals",
+        diagnostics: Optional[ImageDiagnostics],
+        memory: ConversationMemory,
+        new_image_id: Optional[str],
+        has_new_image: bool,
+        has_image: bool,
+        normalized_intent: Optional[Any],
+    ) -> RoutePlan:
+        # 0. A normalised clarification request is authoritative: the intent
+        #    layer already decided the message is ambiguous, so ask.
+        if normalized_intent is not None and getattr(
+            normalized_intent, "needs_clarification", False
+        ) and not has_new_image:
+            return RoutePlan(
+                route=Route.CLARIFY,
+                rationale=[
+                    "Cross-lingual intent normalisation flagged this as ambiguous",
+                    "Asking for clarification rather than guessing a subject",
+                ],
+                clarifying_question=getattr(
+                    normalized_intent, "clarifying_question", ""
+                ),
+                confidence=0.85,
+            )
 
         # 1. Small talk — no image work needed.
         if signals.is_greeting and not has_new_image:
@@ -482,6 +534,61 @@ class ReasoningRouter:
 
         # No shared vocabulary → a different topic. Let it be a text question.
         return False
+
+    # ── multilingual stamping ───────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_language(
+        plan: RoutePlan,
+        normalized_intent: Optional[Any],
+        language_report: Optional[Any],
+        memory: ConversationMemory,
+    ) -> None:
+        """
+        Write language metadata onto a plan in exactly one place.
+
+        Every route needs to know which language to answer in, so this runs once
+        after the plan is chosen rather than on each return branch.
+        """
+        if normalized_intent is not None:
+            plan.detected_language = getattr(
+                normalized_intent, "detected_language", plan.detected_language
+            )
+            plan.response_language = getattr(
+                normalized_intent, "response_language", plan.response_language
+            )
+            plan.mixed_languages = list(
+                getattr(normalized_intent, "mixed_languages", []) or []
+            )
+            plan.language_mixed = bool(plan.mixed_languages)
+            plan.language_confidence = float(
+                getattr(normalized_intent, "language_confidence", 0.5) or 0.5
+            )
+            plan.normalized_intent = normalized_intent
+            if getattr(normalized_intent, "intent", ""):
+                # Reuse the slot the classifier would have filled so the UI can
+                # show one consistent "what we understood" value.
+                plan.detected_intent = plan.detected_intent or normalized_intent.intent
+        elif language_report is not None:
+            plan.detected_language = getattr(language_report, "code", "en")
+            plan.response_language = getattr(language_report, "code", "en")
+            plan.mixed_languages = list(
+                getattr(language_report, "mixed_languages", []) or []
+            )
+            plan.language_mixed = bool(getattr(language_report, "mixed", False))
+            plan.language_confidence = float(
+                getattr(language_report, "confidence", 0.5) or 0.5
+            )
+
+        # A language switch is a first-class event: the pipeline surfaces it and
+        # the model is told about it so context is carried across the boundary.
+        previous = memory.previous_language()
+        if previous and previous != plan.detected_language:
+            plan.language_switch = True
+            plan.rationale.append(
+                f"Language switched {previous} → {plan.detected_language}; "
+                "preserving previous context"
+            )
 
     # ── text-only path ──────────────────────────────────────────────────────
 

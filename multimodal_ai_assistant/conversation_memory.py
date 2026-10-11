@@ -63,6 +63,16 @@ class Turn:
     route: str = ""
     validation_status: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Multilingual book-keeping. `language` is the user's language for this
+    # turn; `response_language` is the language the assistant answered in. They
+    # can differ when the user asked to switch, which is exactly the case the
+    # memory must be able to explain later.
+    language: str = "en"
+    response_language: str = "en"
+    intent: str = ""
+    # Subject nouns extracted from this turn — the candidates a later pronoun
+    # ("isko" / "it") may refer to, used to decide when to clarify.
+    subjects: list[str] = field(default_factory=list)
 
 
 # Words that signal the user is pointing at something rather than introducing
@@ -152,6 +162,10 @@ class ConversationMemory:
         route: str = "",
         validation_status: str = "",
         metadata: Optional[dict[str, Any]] = None,
+        language: str = "en",
+        response_language: str = "en",
+        intent: str = "",
+        subjects: Optional[Iterable[str]] = None,
     ) -> Turn:
         self._counter += 1
         if image_id:
@@ -164,6 +178,10 @@ class ConversationMemory:
             route=route,
             validation_status=validation_status,
             metadata=metadata or {},
+            language=language or "en",
+            response_language=response_language or language or "en",
+            intent=intent,
+            subjects=list(dict.fromkeys(subjects or [])),
         )
         self.turns.append(turn)
         self._prune()
@@ -189,6 +207,45 @@ class ConversationMemory:
 
     def last_turn(self) -> Optional[Turn]:
         return self.turns[-1] if self.turns else None
+
+    # ── multilingual context ────────────────────────────────────────────────
+
+    def previous_language(self) -> Optional[str]:
+        """
+        The language of the most recent user turn.
+
+        Used to break ties in detection for very short follow-ups ("Why?")
+        and, more importantly, to inherit language when a message contains no
+        detectable signal at all.
+        """
+        for turn in reversed(self.turns):
+            if turn.language:
+                return turn.language
+        return None
+
+    def language_history(self) -> list[str]:
+        """The languages used, in order — one per user turn."""
+        return [t.language for t in self.turns if t.language]
+
+    def has_language_switch(self) -> bool:
+        history = self.language_history()
+        return len(set(history)) > 1
+
+    def recent_subjects(self, limit: int = 5) -> list[str]:
+        """
+        Distinct subject nouns mentioned recently, most recent first.
+
+        These are the candidates a pronoun ("isko", "it") could refer to. When
+        there is more than one, the system asks instead of guessing.
+        """
+        subjects: list[str] = []
+        for turn in reversed(self.turns):
+            for subject in turn.subjects:
+                if subject not in subjects:
+                    subjects.append(subject)
+            if len(subjects) >= limit:
+                break
+        return subjects[:limit]
 
     def get_image(self, image_id: Optional[str]) -> Optional[ImageRecord]:
         if not image_id:
@@ -281,6 +338,20 @@ class ConversationMemory:
             turns = [t for t in turns if not t.image_id]
 
         lines: list[str] = []
+        # Tell the model, once, which languages this conversation has used. That
+        # framing is what stops it treating a language switch as a topic change
+        # or as an error to correct.
+        languages = [t.language for t in turns if t.language]
+        if len(set(languages)) > 1:
+            from language_detector import SUPPORTED_LANGUAGES
+
+            seen = ", ".join(
+                SUPPORTED_LANGUAGES.get(c, c) for c in dict.fromkeys(languages)
+            )
+            lines.append(
+                f"[Conversation languages: {seen}. The user switches languages; "
+                "keep following the same topic.]"
+            )
         for turn in turns:
             image_note = ""
             if turn.image_id and not exclude_images:

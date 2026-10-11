@@ -281,6 +281,35 @@ h1, h2, h3, h4 {{
 .pill-question{{ color: {COLORS['accent']}; background: {COLORS['accent_soft']};
                  border-color: {COLORS['accent']}55; }}
 
+/* ── Language chips ──────────────────────────────────────────────────────── */
+/* A quiet row under each answer showing the language it was written in, and
+   flagging a language switch or code-mixed input. Muted by default so it reads
+   as metadata, not decoration. */
+.lang-row {{
+    display: flex; flex-wrap: wrap; gap: 0.35rem;
+    margin: 0.5rem 0 0.15rem 0;
+}}
+.lang-chip {{
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: {COLORS['text_muted']};
+    background: {COLORS['surface_alt']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    white-space: nowrap;
+}}
+.lang-chip-switch {{
+    color: {COLORS['accent']};
+    background: {COLORS['accent_soft']};
+    border-color: {COLORS['accent']}55;
+}}
+.lang-chip-mixed {{
+    color: {COLORS['warning']};
+    background: {COLORS['warning_soft']};
+    border-color: {COLORS['warning']}55;
+}}
+
 /* ── Evidence chips ──────────────────────────────────────────────────────── */
 .source-row {{
     display: flex; flex-wrap: wrap; gap: 0.4rem;
@@ -383,28 +412,15 @@ h1, h2, h3, h4 {{
    Traced by walking the DOM: the offender is `stBottomBlockContainer`, which
    Streamlit ships with `padding: 0 80px`. An earlier attempt added padding on
    the dock wrapper instead, which made it worse. Zero the real culprit. */
+/* Streamlit's shipped 80px side padding on the dock block is left alone.
+
+   Several attempts to "align" the composer with the transcript by zeroing or
+   overriding padding/max-width here backfired: the composer collapsed into a
+   narrow strip that overlapped the last message bubble. The dock's own layout
+   is load-bearing, and a small horizontal offset is far less costly than a
+   broken composer. */
 [data-testid="stBottomBlockContainer"] {{
-    /* 1040px + the 40px side padding the dock wrapper already applies gives an
-       effective content width of 960px, which lands the composer at x=340
-       w=900 — matching the header and the message bubbles exactly. */
-    max-width: 1040px !important;
-    margin-left: auto !important;
-    margin-right: auto !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-}}
-/* Keep inner containers free of their own insets so the wrapper above decides
-   the edges. */
-[data-testid="stBottom"] [data-testid="stChatInput"],
-[data-testid="stBottom"] [data-testid="stChatInputContainer"],
-[data-testid="stBottom"] [data-testid="stVerticalBlock"],
-[data-testid="stBottom"] [data-testid="stHorizontalBlock"] {{
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    margin-left: 0 !important;
-    margin-right: 0 !important;
-    max-width: none !important;
-    width: 100% !important;
+    padding-bottom: 0.25rem !important;
 }}
 
 /* Keep the composer and the attach control on one visual row. */
@@ -976,6 +992,52 @@ def activity_label(route: str) -> str:
 
 def activity_icon(route: str) -> str:
     return _ACTIVITY_ICONS.get(route, "💬")
+
+
+# Language codes → a short label for the badge. Native script is used for the
+# Indic languages so the badge is legible to the speaker, not just to us.
+_LANGUAGE_BADGES = {
+    "en": "EN · English",
+    "hi": "हि · Hindi",
+    "or": "ଓ · Odia",
+    "bn": "বা · Bengali",
+}
+
+
+def language_badge(turn) -> str:
+    """
+    A small chip showing which language the assistant answered in — and, when
+    the user switched language, that the switch was understood.
+
+    The badge exists because multilingual behaviour is otherwise invisible: a
+    correct answer in the wrong language looks like a bug, and a correct answer
+    in the right language after a switch looks like luck. This makes the
+    handling explicit.
+    """
+    report = getattr(turn, "language", None)
+    if report is None:
+        return ""
+
+    response_lang = getattr(turn, "response_language", None) or getattr(report, "code", "en")
+    label = _LANGUAGE_BADGES.get(response_lang, response_lang.upper())
+
+    bits = [f'<span class="lang-chip">🌐 {label}</span>']
+
+    if getattr(turn, "language_switched", False):
+        bits.append(
+            '<span class="lang-chip lang-chip-switch">⇄ language switch</span>'
+        )
+    if getattr(report, "mixed", False):
+        others = ", ".join(
+            _LANGUAGE_BADGES.get(c, c).split(" · ")[0]
+            for c in (getattr(report, "mixed_languages", []) or [])
+        )
+        if others:
+            bits.append(
+                f'<span class="lang-chip lang-chip-mixed">mixed +{others}</span>'
+            )
+
+    return '<div class="lang-row">' + "".join(bits) + "</div>"
 
 
 def confidence_pill(validation) -> str:

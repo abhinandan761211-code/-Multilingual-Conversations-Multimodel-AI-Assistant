@@ -1,26 +1,10 @@
 [
   {
-    "conversation_id": "cca67324d1aa",
-    "title": "What is the capital of France?",
-    "updated_at": 1791658170.547796,
-    "message_count": 14,
+    "conversation_id": "0091f9278390",
+    "title": "Why does the validation loss start increasing?",
+    "updated_at": 1791698508.635925,
+    "message_count": 10,
     "preview": "[Attached loss_curve.png]",
-    "has_image": true
-  },
-  {
-    "conversation_id": "e06b141f5a5d",
-    "title": "Hii",
-    "updated_at": 1791657155.007025,
-    "message_count": 2,
-    "preview": "hii",
-    "has_image": false
-  },
-  {
-    "conversation_id": "b601bd269b9c",
-    "title": "What is overfitting?",
-    "updated_at": 1791657114.619263,
-    "message_count": 2,
-    "preview": "What is overfitting?",
     "has_image": false
   }
 ]

@@ -256,14 +256,29 @@ def persist_turn(
     if not conversation.conversation_id:
         conversation.conversation_id = uuid.uuid4().hex[:12]
 
-    if attach is not None and conversation.image_b64 is None:
+    # A conversation holds ONE image, and later turns are answered against it.
+    #
+    # The message label must therefore describe the image actually stored, not
+    # the file the user just picked. Previously the label came straight from
+    # `attach[0]` while the bytes were kept only if none existed yet — so
+    # attaching a second image left a message labelled with the new filename
+    # rendering the OLD picture. The label and the bytes must never disagree.
+    stored_name: Optional[str] = None
+    if attach is not None:
         name, data = attach
-        conversation.attach_image(name, data)
+        if conversation.image_b64 is None:
+            # First image for this conversation: adopt it.
+            conversation.attach_image(name, data)
+        # Only claim a label when the stored image really is this file.
+        if conversation.image_name == name:
+            stored_name = name
+    elif conversation.image_b64 is not None:
+        # A later turn reusing the pinned image does not repeat it in the
+        # transcript, so it carries no label.
+        stored_name = None
 
     conversation.messages.append(
-        StoredMessage(role="user", content=user_text, image_name=(
-            attach[0] if attach is not None else None
-        ))
+        StoredMessage(role="user", content=user_text, image_name=stored_name)
     )
     conversation.messages.append(
         StoredMessage(role="assistant", content=answer, dev=dev or {})
@@ -295,6 +310,12 @@ class DevTurnView:
         self.ocr = _Simple(data.get("ocr")) if data.get("ocr") else None
         self.evidence = []
         self.validation = _ValidationView(data.get("validation")) if data.get("validation") else None
+        lang = data.get("language")
+        self.language = _LanguageView(lang) if lang else None
+        self.intent = _Simple(data.get("intent")) if data.get("intent") else None
+        self.response_language = (lang or {}).get("response_language", "en")
+        self.language_switched = bool((lang or {}).get("switched", False))
+        self.response_language_corrected = bool((lang or {}).get("corrected", False))
         self.answer = ""
         self.error = None
 
@@ -344,6 +365,23 @@ class _DiagView(_Simple):
         self.quality_notes = (data or {}).get("quality_notes", []) or []
 
 
+class _LanguageView(_Simple):
+    """Rehydrated `LanguageReport` for the developer panel after a reload."""
+
+    def __init__(self, data: Optional[dict] = None) -> None:
+        super().__init__(data or {})
+        self.code = (data or {}).get("code", "en")
+        self.name = (data or {}).get("name", "")
+        self.mixed = bool((data or {}).get("mixed", False))
+        self.mixed_languages = list((data or {}).get("mixed_languages", []) or [])
+        self.switched = bool((data or {}).get("switched", False))
+        self.corrected = bool((data or {}).get("corrected", False))
+        self.response_language = (data or {}).get("response_language", "en")
+
+    def is_supported(self) -> bool:
+        return bool(getattr(self, "supported", True))
+
+
 class _ValidationView(_Simple):
     def __init__(self, data: Optional[dict] = None) -> None:
         super().__init__(data or {})
@@ -369,6 +407,34 @@ def turn_to_dev(turn) -> dict:
         "route": getattr(turn, "route", ""),
         "trace": (getattr(turn, "trace", []) or [])[-14:],
     }
+    # Multilingual telemetry, persisted so the developer panel still explains the
+    # language handling after a page reload.
+    language = getattr(turn, "language", None)
+    intent = getattr(turn, "intent", None)
+    if language is not None:
+        dev["language"] = {
+            "code": getattr(language, "code", "en"),
+            "name": getattr(language, "name", ""),
+            "confidence": round(float(getattr(language, "confidence", 0.0) or 0.0), 2),
+            "mixed": bool(getattr(language, "mixed", False)),
+            "mixed_languages": list(getattr(language, "mixed_languages", []) or []),
+            "script": getattr(language, "script", ""),
+            "backend": getattr(language, "backend", ""),
+            "reasoning": getattr(language, "reasoning", ""),
+            "supported": bool(getattr(language, "is_supported", lambda: True)()),
+            "switched": bool(getattr(turn, "language_switched", False)),
+            "response_language": getattr(turn, "response_language", "en"),
+            "corrected": bool(getattr(turn, "response_language_corrected", False)),
+        }
+    if intent is not None:
+        dev["intent"] = {
+            "intent": getattr(intent, "intent", ""),
+            "entities": list(getattr(intent, "entities", []) or []),
+            "needs_clarification": bool(getattr(intent, "needs_clarification", False)),
+            "response_language": getattr(intent, "response_language", ""),
+            "confidence": round(float(getattr(intent, "confidence", 0.0) or 0.0), 2),
+            "source": getattr(intent, "source_of_resolution", "heuristic"),
+        }
     if plan is not None:
         dev["plan"] = {
             "confidence": getattr(plan, "confidence", 0.0),
@@ -598,9 +664,43 @@ def render_assistant_message(message: dict) -> None:
             unsafe_allow_html=True,
         )
 
+    # Which language the answer was written in — and whether a switch/mix was
+    # handled. Shown always, because it is user-facing state, not telemetry.
+    badge = ui_theme.language_badge(turn)
+    if badge:
+        st.markdown(badge, unsafe_allow_html=True)
+
     # Everything technical is opt-in and collapsed.
     if st.session_state.get("dev_mode", False):
         render_developer_panel(turn)
+
+
+def _render_language_section(turn) -> None:
+    """The language-handling trace: detection, code-mixing, and the answer's language."""
+    report = getattr(turn, "language", None)
+    if report is None:
+        return
+
+    st.markdown("**Language**")
+    lines = [
+        f"- Detected: `{report.name} ({report.code})` "
+        f"confidence `{report.confidence:.2f}`, method `{report.backend}`, "
+        f"script `{report.script}`",
+    ]
+    if getattr(report, "mixed", False):
+        lines.append(
+            f"- Code-mixing detected: `{', '.join(report.mixed_languages)}`"
+        )
+    if report.reasoning:
+        lines.append(f"- Reasoning: {report.reasoning}")
+    response_lang = getattr(turn, "response_language", None)
+    if response_lang:
+        lines.append(f"- Answered in: `{response_lang}`")
+    if getattr(turn, "language_switched", False):
+        lines.append("- Language switch handled; earlier context retained")
+    if getattr(turn, "response_language_corrected", False):
+        lines.append("- Answer re-expressed to match the requested language")
+    st.markdown("\n".join(lines))
 
 
 def render_developer_panel(turn) -> None:
@@ -609,6 +709,8 @@ def render_developer_panel(turn) -> None:
     icon = ui_theme.activity_icon(turn.route)
 
     with st.expander(f"{icon} How this was handled — {activity}", expanded=False):
+        _render_language_section(turn)
+
         plan = turn.plan
         if plan is not None:
             st.markdown("**Decision**")
@@ -741,6 +843,19 @@ def render_empty_state() -> None:
         (_link_icon, "Follow up", "What does the middle layer do?"),
         (_doc_icon, "Ask a question", "What is overfitting and how do you prevent it?"),
     ]
+
+    # A one-line, honest statement of the multilingual capability, so it is
+    # discoverable without reading the source. The languages are named in their
+    # own scripts.
+    st.markdown(
+        f'<div style="margin:0.2rem 0 0.9rem 0;font-size:0.8rem;'
+        f'color:{ui_theme.COLORS["text_muted"]}">'
+        "Ask in <b>English</b>, <b>हिन्दी</b>, <b>ଓଡ଼ିଆ</b> or <b>বাংলা</b> — or mix "
+        "them. The assistant detects the language automatically, keeps the "
+        "context when you switch, and answers in the language you used."
+        "</div>",
+        unsafe_allow_html=True,
+    )
     cols = st.columns(len(examples))
     for col, (icon, title, body) in zip(cols, examples):
         with col:
@@ -829,11 +944,12 @@ def main() -> None:
             else:
                 render_user_message(message)
 
-    # The composer is a fixed overlay, so it does not occupy layout space. CSS
-    # padding on the main block does NOT reserve scroll height for it (measured:
-    # the last message still sat 365px beneath the dock). A real element does.
+    # The composer is a fixed overlay: it occupies no layout space, so without
+    # a real spacer the final message sits underneath it (measured:
+    # msgClippedByDock = true with 9rem). The dock is ~150px tall including its
+    # padding, so reserve clearly more than that.
     if st.session_state.messages:
-        st.markdown('<div style="height:9rem"></div>', unsafe_allow_html=True)
+        st.markdown('<div style="height:13rem"></div>', unsafe_allow_html=True)
 
     # ── attachment + composer ───────────────────────────────────────────────
     # Streamlit pins st.chat_input to a bottom dock, so no widget can share a row

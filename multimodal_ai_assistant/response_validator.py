@@ -13,6 +13,7 @@ Checks implemented (mirroring the assignment's validation checklist):
   V4  Uncertainty when unclear  — blurry/ambiguous inputs must be flagged.
   V5  Format & safety           — length, structure, no obvious refusal-hacks.
   V6  No fabrication            — detects invented proper nouns / values.
+  V7  Response language         — the answer is in the language the user needs.
 
 Design notes
 ------------
@@ -145,8 +146,16 @@ _SCOPED_HEDGE_MARKERS = (
 
 
 def _tokens(text: str) -> set[str]:
+    """
+    Content-bearing word tokens, script-agnostic.
+
+    The original pattern was ASCII-only (`[a-z0-9']+`), which meant a Hindi,
+    Odia or Bengali answer produced *zero* tokens — so its relevance score was
+    always 0 and every correct multilingual turn looked irrelevant. Using a
+    Unicode word class makes the lexical checks work in every supported script.
+    """
     return {
-        w for w in re.findall(r"[a-z0-9']+", text.lower())
+        w for w in re.findall(r"[^\W_]+", text.lower(), flags=re.UNICODE)
         if w not in _STOPWORDS and len(w) > 2
     }
 
@@ -188,6 +197,9 @@ class ValidationContext:
     evidence: list = field(default_factory=list)   # evidence_retriever.Evidence
     conversation_context: str = ""
     ocr_was_untrusted: bool = False
+    # The language the answer is *required* to be in. Set by the pipeline from
+    # the normalised intent; used by the V7 language check.
+    response_language: str = "en"
 
     def evidence_blob(self) -> str:
         parts = [self.image_summary, self.ocr_text, self.vlm_text,
@@ -244,6 +256,9 @@ class ResponseValidator:
 
         # ── optional model-based entailment spot-check ──────────────────────
         self._check_entailment_spotcheck(answer, context, report)
+
+        # ── V7 answered in the required language ────────────────────────────
+        self._check_language(answer, context, report)
 
         self._decide_status(report, context)
         return report
@@ -323,6 +338,34 @@ class ResponseValidator:
             )
             return
 
+        # Cross-script answers cannot be scored lexically.
+        #
+        # When the user asks in Hinglish (Latin) and the answer is Devanagari
+        # Hindi — or vice versa — the two share no Latin tokens by construction,
+        # so a lexical coverage score of 0 says nothing about relevance. This is
+        # the *translation* case, which the assistant is meant to support, so
+        # judging it on token overlap would fail every correct multilingual turn.
+        # The semantic check still applies when an embedder is available.
+        if not self._same_script(question, answer):
+            similarity = self._semantic_similarity(question, answer)
+            if similarity > 0.0:
+                report.add(
+                    "V1-relevance",
+                    similarity >= 0.15,
+                    similarity,
+                    f"Cross-script answer; semantic={similarity:.2f} "
+                    "(lexical overlap not applicable)",
+                )
+            else:
+                report.add(
+                    "V1-relevance",
+                    True,
+                    0.6,
+                    "Cross-script answer (translation/re-expression); "
+                    "lexical relevance not applicable",
+                )
+            return
+
         question_terms = _tokens(question)
 
         similarity = self._semantic_similarity(question, answer)
@@ -364,6 +407,29 @@ class ResponseValidator:
             report.warnings.append(
                 "The answer may not directly address the question asked."
             )
+
+    @staticmethod
+    def _same_script(a: str, b: str) -> bool:
+        """
+        True when two strings predominantly share one writing system.
+
+        Used to detect the translation case (question in one script, answer in
+        another) where lexical overlap is meaningless. Falls back to "same" when
+        the script cannot be determined, so an import failure never changes the
+        validator's default behaviour.
+        """
+        try:
+            from language_detector import script_profile
+
+            profile_a = script_profile(a)
+            profile_b = script_profile(b)
+        except Exception:  # noqa: BLE001
+            return True
+        if not profile_a or not profile_b:
+            return True
+        dominant_a = max(profile_a, key=lambda s: profile_a[s])
+        dominant_b = max(profile_b, key=lambda s: profile_b[s])
+        return dominant_a == dominant_b
 
     def _check_grounding(
         self, answer: str, context: ValidationContext, report: ValidationReport
@@ -585,6 +651,72 @@ class ResponseValidator:
                 "the evidence."
             )
 
+    def _check_language(
+        self, answer: str, context: ValidationContext, report: ValidationReport
+    ) -> None:
+        """
+        V7 — was the answer written in the language the user needs?
+
+        This is the check the assignment's "consistent responses regardless of
+        language" requirement depends on: an answer that is correct but arrives
+        in the wrong language is a failure, not a pass. The comparison is on the
+        *detected* language of the answer against the requested one, and a
+        code-mixed answer counts as correct when the requested language is one of
+        the languages present (very common for technical Hindi/Bengali).
+
+        Detection is best-effort: if it is unavailable, the check passes to
+        avoid punishing a good answer for a detector failure.
+        """
+        requested = (context.response_language or "en").lower()
+
+        # A clarification or an image transcription is not language-bound in the
+        # same way — a transcription must return the text as it appears.
+        route = context.plan.route if context.plan else None
+        if route in (Route.READ_TEXT, Route.CLARIFY):
+            report.add(
+                "V7-language",
+                True,
+                1.0,
+                f"Language pinning not enforced for route '{route.value}'",
+            )
+            return
+
+        try:
+            from language_detector import SUPPORTED_LANGUAGES, detect_language_cached
+
+            detected = detect_language_cached(answer)
+        except Exception:  # noqa: BLE001 - detection must never break validation
+            report.add(
+                "V7-language",
+                True,
+                0.5,
+                "Language detection unavailable; skipping the language check",
+            )
+            return
+
+        matches = detected.code == requested or (
+            detected.mixed and requested in (detected.mixed_languages or [])
+        )
+        # Short answers ("Yes.", a number, a single term) carry too little signal
+        # for reliable detection, so they are not held to the check.
+        if len(answer.split()) < 3:
+            matches = True
+
+        requested_name = SUPPORTED_LANGUAGES.get(requested, requested)
+        detected_name = SUPPORTED_LANGUAGES.get(detected.code, detected.code)
+        report.add(
+            "V7-language",
+            matches,
+            1.0 if matches else 0.3,
+            f"requested={requested_name} detected={detected_name} "
+            f"(confidence={detected.confidence:.2f})",
+        )
+        if not matches:
+            report.warnings.append(
+                f"The answer came back in {detected_name} but {requested_name} was "
+                "requested."
+            )
+
     # ── status decision ─────────────────────────────────────────────────────
 
     def _decide_status(
@@ -621,6 +753,10 @@ class ResponseValidator:
                 note_parts.append("some named details were not found in the evidence")
             if "V2b-entailment" in failed:
                 note_parts.append("a model check disputed a key claim")
+            if "V7-language" in failed:
+                note_parts.append(
+                    "the answer may not be in the requested language"
+                )
             report.uncertainty_note = (
                 "Validation caveat: " + "; ".join(note_parts) + "."
             )
@@ -630,9 +766,14 @@ class ResponseValidator:
         if failed:
             report.status = ValidationStatus.QUALIFIED
             report.confidence = 0.7
-            report.uncertainty_note = (
-                "Minor validation warnings: " + ", ".join(sorted(failed)) + "."
-            )
+            if failed == {"V7-language"}:
+                report.uncertainty_note = (
+                    "The answer may not be in the language you asked for."
+                )
+            else:
+                report.uncertainty_note = (
+                    "Minor validation warnings: " + ", ".join(sorted(failed)) + "."
+                )
             return
 
         report.status = ValidationStatus.PASS
