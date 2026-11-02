@@ -1,0 +1,10 @@
+# ── Development / tooling ─────────────────────────────────────────────────────
+#   pip install -r requirements-dev.txt
+# This pulls in both applications plus the quality tooling.
+-r backend/requirements.txt
+-r frontend/requirements.txt
+
+pytest>=8.0.0
+pytest-cov>=5.0.0
+ruff>=0.5.0
+black>=24.4.0

@@ -1,0 +1,47 @@
+# ── Project metadata and tooling ──────────────────────────────────────────────
+# Dependencies live in backend/ and frontend/ so each app can be installed on its
+# own. Import those files here so `pip install .` still installs everything.
+
+[project]
+name = "multimodal-ai-assistant"
+version = "2.0.0"
+description = "Local, image-aware assistant with routing, OCR, retrieval, validation and multilingual answering"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["backend/requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+exclude = ["frontend*", "tests*", "scripts*"]
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [".venv", "data", "docs", "multimodal_ai_assistant"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # long lines are allowed in docstrings/comments
+    "B008",  # FastAPI's Depends() in defaults is the documented pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]  # sys.path setup must precede imports
+"tests/*" = ["E402"]
+
+# ── black ────────────────────────────────────────────────────────────────────
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+extend-exclude = "multimodal_ai_assistant"

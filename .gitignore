@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated at runtime — safe to delete, rebuilt on demand
+data/chroma_store/
+data/upload_cache/
+data/demo_images/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# The old JSON chat store, if an older checkout left one behind
+data/chats/
+
+# Legacy package folder kept only until the migration branch lands
+multimodal_ai_assistant/
+
+# HF embedding model cache (downloaded on first run)
+.cache/
+*.log

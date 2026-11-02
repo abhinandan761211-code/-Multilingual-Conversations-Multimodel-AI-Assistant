@@ -1,0 +1,7 @@
+# ── Multimodal AI Assistant — frontend dependencies ───────────────────────────
+# Install with:  pip install -r frontend/requirements.txt
+
+streamlit>=1.40.0
+# The UI talks to the backend over HTTP; Pillow is only used to build thumbnails.
+requests>=2.31
+Pillow>=10.0.0

@@ -1,0 +1,19 @@
+# Streamlit settings for `make ui` (also honoured by
+# `streamlit run frontend/app.py` from the repository root).
+
+[server]
+port = 8501
+headless = false
+# Image uploads are capped at 20 MB by the backend; give the client headroom.
+maxUploadSize = 25
+
+[theme]
+base = "dark"
+primaryColor = "#4F7DF3"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#161B22"
+textColor = "#E6EDF3"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
